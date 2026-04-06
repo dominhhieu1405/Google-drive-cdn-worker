@@ -240,10 +240,102 @@ export class DriveClient {
     };
   }
 
+
+  async listFolders({ pageSize = 100, pageToken, search = '' } = {}) {
+    const params = new URLSearchParams();
+    params.set('pageSize', String(Math.min(Math.max(pageSize || 100, 1), MAX_LIST_PAGE_SIZE)));
+    params.set('orderBy', 'name');
+    params.set('supportsAllDrives', 'true');
+    params.set('includeItemsFromAllDrives', 'true');
+    params.set('spaces', 'drive');
+    params.set('fields', 'nextPageToken,files(id,name,parents,createdTime,modifiedTime)');
+    if (pageToken) {
+      params.set('pageToken', pageToken);
+    }
+
+    const queryParts = ["trashed = false", "mimeType = 'application/vnd.google-apps.folder'"];
+    const parentsClause = this.buildParentsQuery();
+    if (parentsClause) {
+      queryParts.push(parentsClause);
+    }
+    const trimmedSearch = typeof search === 'string' ? search.trim() : '';
+    if (trimmedSearch) {
+      queryParts.push(`name contains '${escapeQueryValue(trimmedSearch)}'`);
+    }
+    params.set('q', queryParts.join(' and '));
+    return this.fetchJson(`https://www.googleapis.com/drive/v3/files?${params.toString()}`);
+  }
+
+  async createFolder({ name, parentId } = {}) {
+    if (!name || !name.trim()) {
+      throw new Error('Folder name is required');
+    }
+    const metadata = {
+      name: name.trim(),
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: parentId ? [parentId] : this.parents,
+    };
+    return this.fetchJson('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(metadata),
+    });
+  }
+
+  async updateFolder(id, { name, parentId } = {}) {
+    if (!id) {
+      throw new Error('Folder id is required');
+    }
+    const metadata = {};
+    if (typeof name === 'string' && name.trim()) {
+      metadata.name = name.trim();
+    }
+    const params = new URLSearchParams({ supportsAllDrives: 'true' });
+    if (parentId) {
+      const current = await this.getMetadata(id, 'id,name,parents,mimeType');
+      if (current.mimeType !== 'application/vnd.google-apps.folder') {
+        throw new Error('Target is not a folder');
+      }
+      const existingParents = Array.isArray(current.parents) ? current.parents.join(',') : '';
+      if (existingParents) {
+        params.set('removeParents', existingParents);
+      }
+      params.set('addParents', parentId);
+    }
+    return this.fetchJson(`https://www.googleapis.com/drive/v3/files/${id}?${params.toString()}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(metadata),
+    });
+  }
   async getMetadata(id, fields = 'id,name,size,mimeType,md5Checksum,webViewLink,createdTime,modifiedTime') {
     return this.fetchJson(
       `https://www.googleapis.com/drive/v3/files/${id}?supportsAllDrives=true&fields=${encodeURIComponent(fields)}`,
     );
+  }
+
+  async setFilePublic(id, isPublic = true) {
+    if (!id) {
+      throw new Error('File id is required');
+    }
+    if (isPublic) {
+      return this.fetchJson(`https://www.googleapis.com/drive/v3/files/${id}/permissions?supportsAllDrives=true`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+      });
+    }
+
+    const permissions = await this.fetchJson(
+      `https://www.googleapis.com/drive/v3/files/${id}/permissions?supportsAllDrives=true&fields=permissions(id,type,role)`,
+    );
+    const anon = (permissions.permissions || []).find((perm) => perm.type === 'anyone');
+    if (anon?.id) {
+      await this.fetchJson(`https://www.googleapis.com/drive/v3/files/${id}/permissions/${anon.id}?supportsAllDrives=true`, {
+        method: 'DELETE',
+      });
+    }
+    return { id, isPublic: false };
   }
 
   async deleteFile(id) {
