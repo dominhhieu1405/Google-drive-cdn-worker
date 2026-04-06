@@ -150,9 +150,13 @@ async function handleUpload(file) {
 		if (result.status === 'success') {
 			showNotification('Tải lên thành công!', 'success');
 			status.innerHTML = `<div class="url-copy">
-                <input value="${result.data.rawUrl}" readonly />
-                <button onclick="copyToClipboard('${result.data.rawUrl}')">Copy Link</button>
-            </div>`;
+										<div class="search-box">
+                        <i class="ri-check-line search-icon"></i>
+                        <input value="${result.data.rawUrl}" type="text" readonly class="search-input">
+                        <button class="filter-btn" onclick="copyToClipboard('${result.data.rawUrl}')">
+                            <i class="ri-copy-line"></i>
+                        </button>
+                    </div></div>`;
 		}
 	} catch (err) {
 		showNotification('Lỗi khi tải lên', 'error');
@@ -856,3 +860,205 @@ if ('serviceWorker' in navigator) {
 }
 
 
+
+// Admin panel logic
+const adminState = {
+	token: localStorage.getItem('admin_token') || '',
+	folders: [],
+	settings: null
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+	setupAdminPanel();
+});
+
+function setupAdminPanel() {
+	const loginBtn = document.getElementById('adminLoginBtn');
+	const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+	const createFolderBtn = document.getElementById('createFolderBtn');
+	const adminUploadBtn = document.getElementById('adminUploadBtn');
+
+	if (loginBtn) loginBtn.addEventListener('click', adminLogin);
+	if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveAdminSettings);
+	if (createFolderBtn) createFolderBtn.addEventListener('click', createAdminFolder);
+	if (adminUploadBtn) adminUploadBtn.addEventListener('click', adminUploadFile);
+
+	if (adminState.token) {
+		hydrateAdminPanel();
+	}
+}
+
+async function adminLogin() {
+	const username = document.getElementById('adminUsername')?.value?.trim();
+	const password = document.getElementById('adminPassword')?.value || '';
+	if (!username || !password) {
+		showNotification('Nhập username/password admin', 'warning');
+		return;
+	}
+	const response = await fetch('/api/admin/login', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ username, password })
+	});
+	const payload = await response.json();
+	if (!response.ok || payload.status !== 'success') {
+		showNotification(payload?.error?.message || 'Đăng nhập admin thất bại', 'error');
+		return;
+	}
+	adminState.token = payload.data.token;
+	localStorage.setItem('admin_token', adminState.token);
+	showNotification('Admin đăng nhập thành công', 'success');
+	hydrateAdminPanel();
+}
+
+async function hydrateAdminPanel() {
+	const controls = document.getElementById('adminControls');
+	if (controls) controls.hidden = false;
+	await Promise.all([loadAdminSettings(), loadAdminFolders()]);
+}
+
+async function adminFetch(url, init = {}) {
+	const headers = new Headers(init.headers || {});
+	headers.set('Authorization', `Bearer ${adminState.token}`);
+	const response = await fetch(url, { ...init, headers });
+	const payload = await response.json().catch(() => ({}));
+	if (!response.ok || payload.status !== 'success') {
+		throw new Error(payload?.error?.message || `Request failed (${response.status})`);
+	}
+	return payload.data;
+}
+
+async function loadAdminSettings() {
+	try {
+		const settings = await adminFetch('/api/admin/settings');
+		adminState.settings = settings;
+		const anonEnabled = document.getElementById('settingAnonEnabled');
+		const publicEnabled = document.getElementById('settingPublicEnabled');
+		const prefixEnabled = document.getElementById('settingPrefixEnabled');
+		if (anonEnabled) anonEnabled.checked = !!settings.anonymousUploadEnabled;
+		if (publicEnabled) publicEnabled.checked = !!settings.publicFileEnabled;
+		if (prefixEnabled) prefixEnabled.checked = !!settings.anonymousFilenamePrefixEnabled;
+	} catch (error) {
+		showNotification(error.message, 'error');
+	}
+}
+
+async function loadAdminFolders() {
+	try {
+		const result = await adminFetch('/api/admin/folders');
+		adminState.folders = result.files || [];
+		renderFolderOptions();
+		renderFolderList();
+	} catch (error) {
+		showNotification(error.message, 'error');
+	}
+}
+
+function renderFolderOptions() {
+	const select = document.getElementById('settingAnonFolder');
+	if (!select) return;
+	const opts = adminState.folders
+		.map((folder) => `<option value="${folder.id}">${escapeHtml(folder.name || folder.id)}</option>`)
+		.join('');
+	select.innerHTML = opts;
+	if (adminState.settings?.anonymousUploadFolderId) {
+		select.value = adminState.settings.anonymousUploadFolderId;
+	}
+}
+
+function renderFolderList() {
+	const container = document.getElementById('folderList');
+	if (!container) return;
+	container.innerHTML = adminState.folders.map((folder) => `
+        <div style="display:flex; align-items:center; gap:8px;">
+            <input data-folder-id="${folder.id}" value="${escapeHtml(folder.name || '')}" class="search-input" style="max-width:280px;" />
+            <button class="md-button md-button--tonal" type="button" onclick="renameAdminFolder('${folder.id}')">Đổi tên</button>
+            <button class="md-button" type="button" onclick="deleteAdminFolder('${folder.id}')">Xóa</button>
+        </div>
+    `).join('');
+}
+
+async function saveAdminSettings() {
+	const payload = {
+		anonymousUploadEnabled: !!document.getElementById('settingAnonEnabled')?.checked,
+		publicFileEnabled: !!document.getElementById('settingPublicEnabled')?.checked,
+		anonymousFilenamePrefixEnabled: !!document.getElementById('settingPrefixEnabled')?.checked,
+		anonymousUploadFolderId: document.getElementById('settingAnonFolder')?.value || ''
+	};
+	try {
+		adminState.settings = await adminFetch('/api/admin/settings', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload)
+		});
+		showNotification('Lưu cài đặt admin thành công', 'success');
+	} catch (error) {
+		showNotification(error.message, 'error');
+	}
+}
+
+async function createAdminFolder() {
+	const name = document.getElementById('newFolderName')?.value?.trim();
+	if (!name) {
+		showNotification('Nhập tên thư mục', 'warning');
+		return;
+	}
+	try {
+		await adminFetch('/api/admin/folders', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name })
+		});
+		document.getElementById('newFolderName').value = '';
+		await loadAdminFolders();
+		showNotification('Tạo thư mục thành công', 'success');
+	} catch (error) {
+		showNotification(error.message, 'error');
+	}
+}
+
+async function adminUploadFile() {
+	const input = document.getElementById('adminUploadFile');
+	const file = input?.files?.[0];
+	if (!file) {
+		showNotification('Chọn file để upload', 'warning');
+		return;
+	}
+	const formData = new FormData();
+	formData.append('file', file);
+	try {
+		await adminFetch('/api/admin/upload', { method: 'POST', body: formData });
+		input.value = '';
+		showNotification('Admin upload thành công', 'success');
+		fetchFiles({ reset: true, force: true });
+	} catch (error) {
+		showNotification(error.message, 'error');
+	}
+}
+
+window.renameAdminFolder = async function renameAdminFolder(folderId) {
+	const input = document.querySelector(`input[data-folder-id="${folderId}"]`);
+	const name = input?.value?.trim();
+	if (!name) return;
+	try {
+		await adminFetch(`/api/admin/folders/${folderId}`, {
+			method: 'PATCH',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ name })
+		});
+		showNotification('Đổi tên thư mục thành công', 'success');
+		loadAdminFolders();
+	} catch (error) {
+		showNotification(error.message, 'error');
+	}
+};
+
+window.deleteAdminFolder = async function deleteAdminFolder(folderId) {
+	try {
+		await adminFetch(`/api/admin/folders/${folderId}`, { method: 'DELETE' });
+		showNotification('Đã xóa thư mục', 'success');
+		loadAdminFolders();
+	} catch (error) {
+		showNotification(error.message, 'error');
+	}
+};
