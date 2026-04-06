@@ -421,6 +421,44 @@
                     <div class="loading-indicator" id="fileLoadingIndicator"></div>
                 </div>
             </div>
+
+            <section class="content-card" id="adminPanel">
+                <div class="content-card-header">
+                    <div>
+                        <h2>Admin Panel</h2>
+                        <p>Đăng nhập để quản trị thư mục, upload và cấu hình upload ẩn danh.</p>
+                    </div>
+                </div>
+                <div class="content-card-body" style="display:grid; gap:12px;">
+                    <div id="adminLoginBlock" style="display:grid; gap:8px; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
+                        <input id="adminUsername" type="text" placeholder="Admin username" class="search-input" />
+                        <input id="adminPassword" type="password" placeholder="Admin password" class="search-input" />
+                        <button id="adminLoginBtn" class="md-button md-button--filled" type="button">Đăng nhập admin</button>
+                    </div>
+
+                    <div id="adminControls" hidden style="display:grid; gap:10px;">
+                        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                            <label><input type="checkbox" id="settingAnonEnabled" /> Bật upload ẩn danh</label>
+                            <label><input type="checkbox" id="settingPublicEnabled" /> Bật public file</label>
+                            <label><input type="checkbox" id="settingPrefixEnabled" /> Thêm chỉ số vào đầu tên file ẩn danh</label>
+                        </div>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <select id="settingAnonFolder" class="search-input" style="max-width:360px;"></select>
+                            <button id="saveSettingsBtn" class="md-button md-button--tonal" type="button">Lưu cài đặt</button>
+                        </div>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <input id="newFolderName" type="text" class="search-input" placeholder="Tên thư mục mới" />
+                            <button id="createFolderBtn" class="md-button md-button--tonal" type="button">Tạo thư mục</button>
+                        </div>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                            <input id="adminUploadFile" type="file" />
+                            <button id="adminUploadBtn" class="md-button md-button--filled" type="button">Upload file (admin)</button>
+                        </div>
+                        <div id="folderList" style="display:grid; gap:6px;"></div>
+                    </div>
+                </div>
+            </section>
+
         </div>
     </main>
 

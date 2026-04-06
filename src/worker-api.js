@@ -6,7 +6,7 @@ const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : nul
 const corsHeaders = {
 	'Access-Control-Allow-Origin': '*',
 	'Access-Control-Allow-Headers': 'authorization,content-type,x-api-key',
-	'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
+	'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
 };
 
 const MAX_DIRECT_UPLOAD_BYTES = 10 * 1024 * 1024; // 10MB limit for direct multipart uploads
@@ -14,6 +14,9 @@ const DASHBOARD_REPO_URL = 'https://github.com/tas33n/google-drive-cdn-worker';
 const FILE_COUNT_CACHE_KEY = 'dashboard:file_counts';
 const FILE_COUNT_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_FILE_PAGE_SIZE = 24;
+const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 24;
+const SETTINGS_KEY = 'dashboard:settings';
+const ANON_UPLOAD_COUNTER_KEY = 'anon_upload:counter';
 const DASHBOARD_VERSION = typeof process !== 'undefined' && process.env?.npm_package_version ? process.env.npm_package_version : '1.0.0';
 const DASHBOARD_ASSET_BASE = 'https://cdn.jsdelivr.net/gh/tas33n/Google-drive-cdn-worker@main/src/assets';
 const DEFAULT_ASSET_CONFIG = {
@@ -34,6 +37,8 @@ const LOCAL_CONFIG = {
 	DASHBOARD_JS_URL: '',
 	DASHBOARD_LOGO_URL: '',
 	DRIVE_PROFILES: '[]',
+	ADMIN_USERNAME: '',
+	ADMIN_PASSWORD: '',
 };
 
 export default {
@@ -46,6 +51,8 @@ export default {
 		const path = url.pathname.replace(/\/+/g, '/');
 		const segments = path.split('/').filter(Boolean);
 		const isFileRequest = segments[0] === 'files' && segments[1] && (request.method === 'GET' || request.method === 'HEAD');
+		const isAdminLoginRequest = segments[0] === 'api' && segments[1] === 'admin' && segments[2] === 'login' && request.method === 'POST';
+		const isAnonymousUploadRequest = segments[0] === 'api' && segments[1] === 'anonymous' && segments[2] === 'upload' && request.method === 'POST';
 		let configPromise;
 		const getConfig = () => {
 			if (!configPromise) {
@@ -53,23 +60,19 @@ export default {
 			}
 			return configPromise;
 		};
-		// Dashboard and Swagger routes (public)
+
 		if ((segments.length === 0 || path === '/') && request.method === 'GET') {
 			return handleDashboard(request, await getConfig());
 		}
-
 		if (segments[0] === 'docs' || segments[0] === 'swagger' || segments[0] === 'api-docs') {
 			return handleSwaggerUI(await getConfig());
 		}
-
 		if (segments[0] === 'api' && segments[1] === 'stats' && request.method === 'GET') {
 			return handleStats(request, env);
 		}
-
 		if (segments[0] === 'api' && segments[1] === 'openapi.json' && request.method === 'GET') {
 			return handleOpenAPI(request, await getConfig());
 		}
-
 		if (segments[0] === 'api' && segments[1] === 'dashboard') {
 			if (segments[2] === 'summary' && request.method === 'GET') {
 				const config = await getConfig();
@@ -84,37 +87,68 @@ export default {
 		}
 
 		const config = await getConfig();
+		const settings = await getDashboardSettings(env, config);
+		if (isFileRequest && !settings.publicFileEnabled) {
+			return errorResponse('forbidden', 'Public file access is disabled by admin.', 403);
+		}
 
-		// File delivery is public, API requests require auth
-		if (!isFileRequest && !isAuthorized(request, config.API_TOKENS)) {
+		const requiresApiTokenAuth = !isFileRequest && !isAdminLoginRequest && !isAnonymousUploadRequest && !(segments[0] === 'api' && segments[1] === 'admin');
+		if (requiresApiTokenAuth && !isAuthorized(request, config.API_TOKENS)) {
 			return errorResponse('unauthorized', 'API key required. Use Authorization: Bearer <token> or x-api-key header.', 401);
 		}
 
 		const drive = new DriveClient(config);
-
 		try {
-			// Track public file requests for statistics
 			if (isFileRequest) {
 				ctx.waitUntil(trackFileRequest(env, segments[1]));
 				return await drive.streamFile(segments[1], request.headers.get('Range'), request.method);
 			}
 
-			if (segments[0] === 'api' && segments[1] === 'files' && request.method === 'POST') {
-				const result = await handleMultipartUpload(request, drive, config, env, url.origin);
-				ctx.waitUntil(trackUpload(env, 'multipart'));
+			if (isAdminLoginRequest) {
+				return handleAdminLogin(request, env, config);
+			}
+
+			if (segments[0] === 'api' && segments[1] === 'admin') {
+				const adminSession = await requireAdminSession(request, env);
+				if (!adminSession.ok) return adminSession.response;
+				if (segments[2] === 'settings') {
+					if (request.method === 'GET') return successResponse(settings);
+					if (request.method === 'PUT' || request.method === 'PATCH') return handleUpdateSettings(request, env, config);
+				}
+				if (segments[2] === 'folders') {
+					if (request.method === 'GET') return handleListFolders(request, drive);
+					if (request.method === 'POST') return handleCreateFolder(request, drive);
+					if (segments[3] && request.method === 'PATCH') return handleUpdateFolder(segments[3], request, drive);
+					if (segments[3] && request.method === 'DELETE') return handleDelete(segments[3], drive);
+				}
+				if (segments[2] === 'upload' && request.method === 'POST') {
+					const result = await handleMultipartUpload(request, drive, config, env, url.origin, settings);
+					ctx.waitUntil(trackUpload(env, 'admin_multipart'));
+					return result;
+				}
+			}
+
+			if (isAnonymousUploadRequest) {
+				if (!settings.anonymousUploadEnabled) {
+					return errorResponse('forbidden', 'Anonymous uploads are disabled by admin.', 403);
+				}
+				const result = await handleAnonymousUpload(request, drive, config, env, url.origin, settings);
+				ctx.waitUntil(trackUpload(env, 'anonymous_multipart'));
 				return result;
 			}
 
+			if (segments[0] === 'api' && segments[1] === 'files' && request.method === 'POST') {
+				const result = await handleMultipartUpload(request, drive, config, env, url.origin, settings);
+				ctx.waitUntil(trackUpload(env, 'multipart'));
+				return result;
+			}
 			if (segments[0] === 'api' && segments[1] === 'uploads' && request.method === 'POST') {
 				const result = await handleResumableInit(request, drive);
 				ctx.waitUntil(trackUpload(env, 'resumable'));
 				return result;
 			}
-
 			if (segments[0] === 'api' && segments[1] === 'files' && segments[2]) {
-				if (request.method === 'GET') {
-					return await handleMetadata(segments[2], drive, config, url.origin);
-				}
+				if (request.method === 'GET') return await handleMetadata(segments[2], drive, config, url.origin);
 				if (request.method === 'DELETE') {
 					const result = await handleDelete(segments[2], drive);
 					ctx.waitUntil(trackDelete(env));
@@ -129,6 +163,7 @@ export default {
 		}
 	},
 };
+
 
 function handleSwaggerUI(config) {
 	const html = generateSwaggerHTML(config);
@@ -491,7 +526,145 @@ function extractToken(request) {
 	return request.headers.get('x-api-key');
 }
 
-async function handleMultipartUpload(request, drive, config, env, origin) {
+function extractAdminToken(request) {
+	const bearer = request.headers.get('authorization');
+	if (bearer && bearer.toLowerCase().startsWith('bearer ')) {
+		return bearer.slice(7).trim();
+	}
+	return request.headers.get('x-admin-token');
+}
+
+function getDefaultSettings(config = {}) {
+	const defaultParent = String(config.DRIVE_UPLOAD_ROOT || 'root')
+		.split(',')
+		.map((item) => item.trim())
+		.filter(Boolean)[0] || 'root';
+	return {
+		anonymousUploadEnabled: false,
+		anonymousUploadFolderId: defaultParent,
+		publicFileEnabled: true,
+		anonymousFilenamePrefixEnabled: true,
+	};
+}
+
+async function getDashboardSettings(env, config = {}) {
+	const defaults = getDefaultSettings(config);
+	if (!env?.STATS) return defaults;
+	try {
+		const raw = await env.STATS.get(SETTINGS_KEY);
+		if (!raw) return defaults;
+		const parsed = JSON.parse(raw);
+		return { ...defaults, ...parsed };
+	} catch {
+		return defaults;
+	}
+}
+
+async function saveDashboardSettings(env, settings) {
+	if (!env?.STATS) {
+		throw new Error('STATS KV binding is required for admin settings');
+	}
+	await env.STATS.put(SETTINGS_KEY, JSON.stringify(settings));
+	return settings;
+}
+
+async function handleAdminLogin(request, env, config) {
+	if (!config.ADMIN_USERNAME || !config.ADMIN_PASSWORD) {
+		return errorResponse('forbidden', 'Admin credentials are not configured on this worker.', 403);
+	}
+	if (!env?.STATS) {
+		return errorResponse('internal_error', 'STATS KV binding is required for admin login sessions.', 500);
+	}
+	const payload = await request.json().catch(() => null);
+	if (!payload?.username || !payload?.password) {
+		return errorResponse('invalid_request', 'username and password are required', 400);
+	}
+	if (payload.username !== config.ADMIN_USERNAME || payload.password !== config.ADMIN_PASSWORD) {
+		return errorResponse('unauthorized', 'Invalid admin credentials', 401);
+	}
+	const token = crypto.randomUUID();
+	await env.STATS.put(`admin_session:${token}`, JSON.stringify({ username: payload.username, createdAt: new Date().toISOString() }), {
+		expirationTtl: ADMIN_SESSION_TTL_SECONDS,
+	});
+	return successResponse({ token, expiresIn: ADMIN_SESSION_TTL_SECONDS });
+}
+
+async function requireAdminSession(request, env) {
+	if (!env?.STATS) {
+		return { ok: false, response: errorResponse('internal_error', 'STATS KV binding is required for admin login sessions.', 500) };
+	}
+	const token = extractAdminToken(request);
+	if (!token) {
+		return { ok: false, response: errorResponse('unauthorized', 'Admin token missing. Login at /api/admin/login.', 401) };
+	}
+	const session = await env.STATS.get(`admin_session:${token}`);
+	if (!session) {
+		return { ok: false, response: errorResponse('unauthorized', 'Admin session expired or invalid.', 401) };
+	}
+	return { ok: true };
+}
+
+async function handleUpdateSettings(request, env, config) {
+	const payload = await request.json().catch(() => null);
+	if (!payload || typeof payload !== 'object') {
+		return errorResponse('invalid_request', 'JSON body is required', 400);
+	}
+	const current = await getDashboardSettings(env, config);
+	const next = {
+		...current,
+		...pickBoolean(payload, ['anonymousUploadEnabled', 'publicFileEnabled', 'anonymousFilenamePrefixEnabled']),
+	};
+	if (typeof payload.anonymousUploadFolderId === 'string' && payload.anonymousUploadFolderId.trim()) {
+		next.anonymousUploadFolderId = payload.anonymousUploadFolderId.trim();
+	}
+	await saveDashboardSettings(env, next);
+	return successResponse(next);
+}
+
+function pickBoolean(payload, keys) {
+	const result = {};
+	for (const key of keys) {
+		if (typeof payload[key] === 'boolean') {
+			result[key] = payload[key];
+		}
+	}
+	return result;
+}
+
+async function handleListFolders(request, drive) {
+	const url = new URL(request.url);
+	const search = url.searchParams.get('search') || '';
+	const folders = await drive.listFolders({ search });
+	return successResponse(folders);
+}
+
+async function handleCreateFolder(request, drive) {
+	const payload = await request.json().catch(() => null);
+	if (!payload?.name) {
+		return errorResponse('invalid_request', 'name is required', 400);
+	}
+	const folder = await drive.createFolder({ name: payload.name, parentId: payload.parentId });
+	return successResponse(folder, 201);
+}
+
+async function handleUpdateFolder(id, request, drive) {
+	const payload = await request.json().catch(() => null);
+	if (!payload || typeof payload !== 'object') {
+		return errorResponse('invalid_request', 'JSON body is required', 400);
+	}
+	const folder = await drive.updateFolder(id, { name: payload.name, parentId: payload.parentId });
+	return successResponse(folder);
+}
+
+async function getNextAnonymousUploadIndex(env) {
+	if (!env?.STATS) return Date.now();
+	const current = parseInt((await env.STATS.get(ANON_UPLOAD_COUNTER_KEY)) || '0', 10);
+	const next = Number.isFinite(current) ? current + 1 : 1;
+	await env.STATS.put(ANON_UPLOAD_COUNTER_KEY, String(next));
+	return next;
+}
+
+async function handleMultipartUpload(request, drive, config, env, origin, settings = null) {
 	const formData = await request.formData();
 	const file = formData.get('file');
 	if (!(file instanceof File)) {
@@ -510,7 +683,33 @@ async function handleMultipartUpload(request, drive, config, env, origin) {
 		}
 	}
 	const uploaded = await drive.uploadMultipart({ file, metadata });
+	if (settings?.publicFileEnabled) {
+		await drive.setFilePublic(uploaded.id, true).catch(() => null);
+	}
 	return successResponse({ ...uploaded, rawUrl: buildFilesUrl(uploaded.id, config, origin) }, 201);
+}
+
+async function handleAnonymousUpload(request, drive, config, env, origin, settings) {
+	const formData = await request.formData();
+	const file = formData.get('file');
+	if (!(file instanceof File)) {
+		return errorResponse('invalid_request', '`file` form field missing', 400);
+	}
+	if (file.size > MAX_DIRECT_UPLOAD_BYTES) {
+		return errorResponse('payload_too_large', `file exceeds ${MAX_DIRECT_UPLOAD_BYTES} bytes, use /api/uploads`, 413);
+	}
+	const metadata = {};
+	const desiredName = file.name || `upload-${Date.now()}`;
+	const idx = await getNextAnonymousUploadIndex(env);
+	metadata.name = settings?.anonymousFilenamePrefixEnabled ? `${idx}_${desiredName}` : desiredName;
+	if (settings?.anonymousUploadFolderId) {
+		metadata.parents = [settings.anonymousUploadFolderId];
+	}
+	const uploaded = await drive.uploadMultipart({ file, metadata });
+	if (settings?.publicFileEnabled) {
+		await drive.setFilePublic(uploaded.id, true).catch(() => null);
+	}
+	return successResponse({ ...uploaded, anonymous: true, rawUrl: buildFilesUrl(uploaded.id, config, origin) }, 201);
 }
 
 async function handleResumableInit(request, drive) {
@@ -583,7 +782,8 @@ async function withDefaults(env = {}) {
 				key === 'API_TOKENS' ||
 				key === 'CDN_BASE_URL' ||
 				key.startsWith('DASHBOARD_') ||
-				key === 'DRIVE_PROFILES'
+				key === 'DRIVE_PROFILES' ||
+				key.startsWith('ADMIN_')
 			) {
 				config[key] = env[key];
 			}
