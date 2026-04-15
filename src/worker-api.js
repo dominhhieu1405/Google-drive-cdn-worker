@@ -1,16 +1,20 @@
 // Copyright (c) 2025 tas33n
 import { DriveClient } from './lib/drive.js';
 import dashboardHtml from './index.html';
+import adminHtml from './admin.html';
+import fileHtml from './file.html';
+import folderHtml from './folder.html';
+
 const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 
 const corsHeaders = {
 	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Headers': 'authorization,content-type,x-api-key',
+	'Access-Control-Allow-Headers': 'authorization,content-type,x-api-key,content-range,x-upload-content-type,x-upload-content-length',
 	'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
 };
 
-const MAX_DIRECT_UPLOAD_BYTES = 10 * 1024 * 1024; // 10MB limit for direct multipart uploads
-const DASHBOARD_REPO_URL = 'https://github.com/tas33n/google-drive-cdn-worker';
+const MAX_DIRECT_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB limit for direct multipart uploads
+const DASHBOARD_REPO_URL = 'https://luce.moe';
 const FILE_COUNT_CACHE_KEY = 'dashboard:file_counts';
 const FILE_COUNT_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_FILE_PAGE_SIZE = 24;
@@ -18,7 +22,8 @@ const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 24;
 const SETTINGS_KEY = 'dashboard:settings';
 const ANON_UPLOAD_COUNTER_KEY = 'anon_upload:counter';
 const DASHBOARD_VERSION = typeof process !== 'undefined' && process.env?.npm_package_version ? process.env.npm_package_version : '1.0.0';
-const DASHBOARD_ASSET_BASE = 'https://cdn.jsdelivr.net/gh/tas33n/Google-drive-cdn-worker@main/src/assets';
+const DASHBOARD_ASSET_BASE = 'https://dominhhieu1405.github.io/Google-drive-cdn-worker/src/assets';
+// const DASHBOARD_ASSET_BASE = 'https://cdn.jsdelivr.net/gh/dominhhieu1405/Google-drive-cdn-worker@main/src/assets';
 const DEFAULT_ASSET_CONFIG = {
 	cssUrl: `${DASHBOARD_ASSET_BASE}/main.css`,
 	jsUrl: `${DASHBOARD_ASSET_BASE}/main.js`,
@@ -50,9 +55,23 @@ export default {
 		const url = new URL(request.url);
 		const path = url.pathname.replace(/\/+/g, '/');
 		const segments = path.split('/').filter(Boolean);
-		const isFileRequest = segments[0] === 'files' && segments[1] && (request.method === 'GET' || request.method === 'HEAD');
+
+		let targetId = segments[1];
+		if (!targetId && url.searchParams.has('id')) {
+			targetId = url.searchParams.get('id');
+		}
+
+		const isDownloadRequest = segments[0] === 'download' && segments[1] && (request.method === 'GET' || request.method === 'HEAD');
+		const isFilePageRequest = (segments[0] === 'files' || segments[0] === 'file') && segments[1] && request.method === 'GET';
+		const isFolderPageRequest = segments[0] === 'folder' && segments[1] && request.method === 'GET';
+		const isDriveRedirect = targetId && request.method === 'GET' && (
+			segments[0] === 'drive' || segments[0] === 'd' || segments[0] === 'open' || segments[0] === 'view' || segments[0] === 'uc' ||
+			(segments[0] === 'file' && segments[1] === 'd' && (targetId = segments[2]))
+		);
+
 		const isAdminLoginRequest = segments[0] === 'api' && segments[1] === 'admin' && segments[2] === 'login' && request.method === 'POST';
-		const isAnonymousUploadRequest = segments[0] === 'api' && segments[1] === 'anonymous' && segments[2] === 'upload' && request.method === 'POST';
+		const isAnonymousUploadCompleteRequest = segments[0] === 'api' && segments[1] === 'anonymous' && segments[2] === 'upload' && segments[3] === 'complete' && request.method === 'POST';
+		const isAnonymousUploadRequest = segments[0] === 'api' && segments[1] === 'anonymous' && segments[2] === 'upload' && !segments[3] && request.method === 'POST';
 		let configPromise;
 		const getConfig = () => {
 			if (!configPromise) {
@@ -60,19 +79,26 @@ export default {
 			}
 			return configPromise;
 		};
-
+		// Dashboard and Swagger routes (public)
 		if ((segments.length === 0 || path === '/') && request.method === 'GET') {
 			return handleDashboard(request, await getConfig());
+		}
+		// Route: Trang Admin (Mới)
+		if (segments[0] === 'admin' && request.method === 'GET') {
+			return handleAdminPage(request, await getConfig());
 		}
 		if (segments[0] === 'docs' || segments[0] === 'swagger' || segments[0] === 'api-docs') {
 			return handleSwaggerUI(await getConfig());
 		}
+
 		if (segments[0] === 'api' && segments[1] === 'stats' && request.method === 'GET') {
 			return handleStats(request, env);
 		}
+
 		if (segments[0] === 'api' && segments[1] === 'openapi.json' && request.method === 'GET') {
 			return handleOpenAPI(request, await getConfig());
 		}
+
 		if (segments[0] === 'api' && segments[1] === 'dashboard') {
 			if (segments[2] === 'summary' && request.method === 'GET') {
 				const config = await getConfig();
@@ -88,33 +114,46 @@ export default {
 
 		const config = await getConfig();
 		const settings = await getDashboardSettings(env, config);
-		if (isFileRequest && !settings.publicFileEnabled) {
-			return errorResponse('forbidden', 'Public file access is disabled by admin.', 403);
-		}
+		// if (isFileRequest && !settings.publicFileEnabled) {
+		// 	return errorResponse('forbidden', 'Public file access is disabled by admin.', 403);
+		// }
 
-		const requiresApiTokenAuth = !isFileRequest && !isAdminLoginRequest && !isAnonymousUploadRequest && !(segments[0] === 'api' && segments[1] === 'admin');
+		// File delivery is public, API requests require auth
+		const isPublicRequest = isDownloadRequest || isFilePageRequest || isFolderPageRequest || isDriveRedirect;
+		const requiresApiTokenAuth = !isPublicRequest && !isAdminLoginRequest && !isAnonymousUploadRequest && !isAnonymousUploadCompleteRequest && !(segments[0] === 'api' && segments[1] === 'admin');
 		if (requiresApiTokenAuth && !isAuthorized(request, config.API_TOKENS)) {
 			return errorResponse('unauthorized', 'API key required. Use Authorization: Bearer <token> or x-api-key header.', 401);
 		}
 
 		const drive = new DriveClient(config);
-		try {
-			if (isFileRequest) {
-				ctx.waitUntil(trackFileRequest(env, segments[1]));
-				return await drive.streamFile(segments[1], request.headers.get('Range'), request.method);
-			}
 
+		try {
+			if (isDriveRedirect) {
+				return await handleDriveRedirect(targetId, drive, url.origin);
+			}
+			if (isFilePageRequest) {
+				return await handleFilePage(segments[1], drive, config, url.origin);
+			}
+			if (isFolderPageRequest) {
+				return await handleFolderPage(segments[1], drive, config, url.origin);
+			}
+			// Track public file requests for statistics
+			if (isDownloadRequest) {
+				ctx.waitUntil(trackFileRequest(env, segments[1]));
+				const meta = await drive.getMetadata(segments[1], 'name').catch(() => ({}));
+				return await drive.streamFile(segments[1], request.headers.get('Range'), request.method, meta.name || '');
+			}
 			if (isAdminLoginRequest) {
 				return handleAdminLogin(request, env, config);
 			}
 
 			if (segments[0] === 'api' && segments[1] === 'admin') {
-				const adminSession = await requireAdminSession(request, env);
-				if (!adminSession.ok) return adminSession.response;
 				if (segments[2] === 'settings') {
 					if (request.method === 'GET') return successResponse(settings);
 					if (request.method === 'PUT' || request.method === 'PATCH') return handleUpdateSettings(request, env, config);
 				}
+				const adminSession = await requireAdminSession(request, env);
+				if (!adminSession.ok) return adminSession.response;
 				if (segments[2] === 'folders') {
 					if (request.method === 'GET') return handleListFolders(request, drive);
 					if (request.method === 'POST') return handleCreateFolder(request, drive);
@@ -128,25 +167,35 @@ export default {
 				}
 			}
 
+			if (isAnonymousUploadCompleteRequest) {
+				if (!settings.anonymousUploadEnabled) {
+					return errorResponse('forbidden', 'Anonymous uploads are disabled by admin.', 403);
+				}
+				return handleAnonymousUploadComplete(request, drive, config, url.origin);
+			}
+
 			if (isAnonymousUploadRequest) {
 				if (!settings.anonymousUploadEnabled) {
 					return errorResponse('forbidden', 'Anonymous uploads are disabled by admin.', 403);
 				}
 				const result = await handleAnonymousUpload(request, drive, config, env, url.origin, settings);
-				ctx.waitUntil(trackUpload(env, 'anonymous_multipart'));
+				ctx.waitUntil(trackUpload(env, 'anonymous_resumable'));
 				return result;
 			}
+
 
 			if (segments[0] === 'api' && segments[1] === 'files' && request.method === 'POST') {
 				const result = await handleMultipartUpload(request, drive, config, env, url.origin, settings);
 				ctx.waitUntil(trackUpload(env, 'multipart'));
 				return result;
 			}
+
 			if (segments[0] === 'api' && segments[1] === 'uploads' && request.method === 'POST') {
 				const result = await handleResumableInit(request, drive);
 				ctx.waitUntil(trackUpload(env, 'resumable'));
 				return result;
 			}
+
 			if (segments[0] === 'api' && segments[1] === 'files' && segments[2]) {
 				if (request.method === 'GET') return await handleMetadata(segments[2], drive, config, url.origin);
 				if (request.method === 'DELETE') {
@@ -164,7 +213,6 @@ export default {
 	},
 };
 
-
 function handleSwaggerUI(config) {
 	const html = generateSwaggerHTML(config);
 	return new Response(html, {
@@ -180,19 +228,39 @@ async function handleStats(request, env) {
 	return successResponse(stats);
 }
 
+// Hàm render trang Admin riêng biệt
+async function handleAdminPage(request, config) {
+	const origin = new URL(request.url).origin;
+	const html = buildAdminHTML(config, origin);
+	return new Response(html, {
+		headers: {
+			'Content-Type': 'text/html; charset=utf-8',
+			...corsHeaders,
+		},
+	});
+}
+
+
+function buildAdminHTML(config, origin) {
+	const template = asText(adminHtml);
+	const assets = resolveDashboardAssets(config);
+	const populated = applyAssetPlaceholders(template, assets);
+	return populated;
+}
+
 async function handleOpenAPI(request, config) {
 	const baseUrl = config.CDN_BASE_URL || new URL(request.url).origin;
 
 	const openApiSpec = {
 		openapi: '3.0.0',
 		info: {
-			title: 'Google Drive CDN API',
+			title: 'Luce Drive CDN API',
 			version: '3.0.0',
 			description:
-				'Transform your Google Drive into a CDN service. Upload files via API and serve them publicly through fast CDN endpoints.',
+				'Transform your Luce Drive into a CDN service. Upload files via API and serve them publicly through fast CDN endpoints.',
 			contact: {
-				name: 'GitHub Repository',
-				url: 'https://github.com/tas33n/google-drive-cdn-worker',
+				name: 'Moe',
+				url: 'https://luce.moe',
 			},
 		},
 		servers: [{ url: baseUrl, description: 'Production server' }],
@@ -236,7 +304,7 @@ async function handleOpenAPI(request, config) {
 									schema: {
 										type: 'object',
 										properties: {
-											id: { type: 'string', description: 'Google Drive file ID' },
+											id: { type: 'string', description: 'Luce Drive file ID' },
 											name: { type: 'string' },
 											mimeType: { type: 'string' },
 											size: { type: 'string' },
@@ -257,7 +325,7 @@ async function handleOpenAPI(request, config) {
 					tags: ['Files'],
 					summary: 'Initialize resumable upload',
 					description:
-						'Create a resumable upload session for large files. Use the returned uploadUrl to stream chunks directly to Google Drive.',
+						'Create a resumable upload session for large files. Use the returned uploadUrl to stream chunks directly to Luce Drive.',
 					security: [{ bearerAuth: [] }, { apiKey: [] }],
 					requestBody: {
 						required: true,
@@ -304,7 +372,13 @@ async function handleOpenAPI(request, config) {
 					summary: 'Get file metadata',
 					description: 'Retrieve metadata for a file including its public URL',
 					security: [{ bearerAuth: [] }, { apiKey: [] }],
-					parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Google Drive file ID' }],
+					parameters: [{
+						name: 'id',
+						in: 'path',
+						required: true,
+						schema: { type: 'string' },
+						description: 'Luce Drive file ID'
+					}],
 					responses: {
 						200: {
 							description: 'File metadata',
@@ -330,9 +404,15 @@ async function handleOpenAPI(request, config) {
 				delete: {
 					tags: ['Files'],
 					summary: 'Delete a file',
-					description: 'Delete a file from Google Drive',
+					description: 'Delete a file from Luce Drive',
 					security: [{ bearerAuth: [] }, { apiKey: [] }],
-					parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Google Drive file ID' }],
+					parameters: [{
+						name: 'id',
+						in: 'path',
+						required: true,
+						schema: { type: 'string' },
+						description: 'Luce Drive file ID'
+					}],
 					responses: {
 						204: { description: 'File deleted successfully' },
 						401: { description: 'Unauthorized' },
@@ -346,8 +426,13 @@ async function handleOpenAPI(request, config) {
 					summary: 'Access file via public URL',
 					description: 'Public endpoint to access files. No authentication required. Supports Range requests for video streaming.',
 					parameters: [
-						{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Google Drive file ID' },
-						{ name: 'Range', in: 'header', schema: { type: 'string' }, description: 'Byte range for partial content (e.g., bytes=0-1023)' },
+						{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Luce Drive file ID' },
+						{
+							name: 'Range',
+							in: 'header',
+							schema: { type: 'string' },
+							description: 'Byte range for partial content (e.g., bytes=0-1023)'
+						},
 					],
 					responses: {
 						200: { description: 'File content' },
@@ -359,7 +444,13 @@ async function handleOpenAPI(request, config) {
 					tags: ['Public Files'],
 					summary: 'Get file headers',
 					description: 'Get file metadata via HEAD request',
-					parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Google Drive file ID' }],
+					parameters: [{
+						name: 'id',
+						in: 'path',
+						required: true,
+						schema: { type: 'string' },
+						description: 'Luce Drive file ID'
+					}],
 					responses: {
 						200: { description: 'File headers' },
 						404: { description: 'File not found' },
@@ -431,12 +522,30 @@ async function handleDashboardSummary(request, env, config, drive) {
 }
 
 async function handleDashboardFiles(request, env, config, drive) {
+
+
 	const url = new URL(request.url);
 	const pageSizeParam = parseInt(url.searchParams.get('pageSize') || '', 10);
 	const pageSize = Number.isFinite(pageSizeParam) && pageSizeParam > 0 ? pageSizeParam : DEFAULT_FILE_PAGE_SIZE;
 	const pageToken = url.searchParams.get('pageToken') || undefined;
 	const search = url.searchParams.get('search') || '';
 	const type = (url.searchParams.get('type') || '').toLowerCase();
+
+
+	const adminSession = await requireAdminSession(request, env);
+	if (!adminSession.ok)
+		return successResponse({
+			files: [],
+			nextPageToken: null,
+			totalFiles: 0,
+			folderCount: 0,
+			pageSize,
+			query: {
+				search,
+				type: type || 'all',
+			},
+		});
+
 	const [listResponse, counts] = await Promise.all([
 		drive.listFiles({ pageSize, pageToken, search, type }),
 		getFileCountsSnapshot(env, drive).catch(() => null),
@@ -541,8 +650,9 @@ function getDefaultSettings(config = {}) {
 		.filter(Boolean)[0] || 'root';
 	return {
 		anonymousUploadEnabled: false,
-		anonymousUploadFolderId: defaultParent,
-		publicFileEnabled: true,
+		// anonymousUploadFolderId: defaultParent,
+		anonymousUploadFolderId: "",
+		publicFileEnabled: false,
 		anonymousFilenamePrefixEnabled: true,
 	};
 }
@@ -583,7 +693,10 @@ async function handleAdminLogin(request, env, config) {
 		return errorResponse('unauthorized', 'Invalid admin credentials', 401);
 	}
 	const token = crypto.randomUUID();
-	await env.STATS.put(`admin_session:${token}`, JSON.stringify({ username: payload.username, createdAt: new Date().toISOString() }), {
+	await env.STATS.put(`admin_session:${token}`, JSON.stringify({
+		username: payload.username,
+		createdAt: new Date().toISOString()
+	}), {
 		expirationTtl: ADMIN_SESSION_TTL_SECONDS,
 	});
 	return successResponse({ token, expiresIn: ADMIN_SESSION_TTL_SECONDS });
@@ -591,7 +704,10 @@ async function handleAdminLogin(request, env, config) {
 
 async function requireAdminSession(request, env) {
 	if (!env?.STATS) {
-		return { ok: false, response: errorResponse('internal_error', 'STATS KV binding is required for admin login sessions.', 500) };
+		return {
+			ok: false,
+			response: errorResponse('internal_error', 'STATS KV binding is required for admin login sessions.', 500)
+		};
 	}
 	const token = extractAdminToken(request);
 	if (!token) {
@@ -612,11 +728,14 @@ async function handleUpdateSettings(request, env, config) {
 	const current = await getDashboardSettings(env, config);
 	const next = {
 		...current,
-		...pickBoolean(payload, ['anonymousUploadEnabled', 'publicFileEnabled', 'anonymousFilenamePrefixEnabled']),
+		// ...pickBoolean(payload, ['anonymousUploadEnabled', 'publicFileEnabled', 'anonymousFilenamePrefixEnabled']),
+		...pickBoolean(payload, ['anonymousUploadEnabled']),
 	};
+	next.publicFileEnabled = false;
 	if (typeof payload.anonymousUploadFolderId === 'string' && payload.anonymousUploadFolderId.trim()) {
-		next.anonymousUploadFolderId = payload.anonymousUploadFolderId.trim();
+		// next.anonymousUploadFolderId = payload.anonymousUploadFolderId.trim();
 	}
+
 	await saveDashboardSettings(env, next);
 	return successResponse(next);
 }
@@ -683,34 +802,55 @@ async function handleMultipartUpload(request, drive, config, env, origin, settin
 		}
 	}
 	const uploaded = await drive.uploadMultipart({ file, metadata });
-	if (settings?.publicFileEnabled) {
-		await drive.setFilePublic(uploaded.id, true).catch(() => null);
-	}
+	// if (settings?.publicFileEnabled) {
+	// 	await drive.setFilePublic(uploaded.id, true).catch(() => null);
+	// }
 	return successResponse({ ...uploaded, rawUrl: buildFilesUrl(uploaded.id, config, origin) }, 201);
 }
 
 async function handleAnonymousUpload(request, drive, config, env, origin, settings) {
-	const formData = await request.formData();
-	const file = formData.get('file');
-	if (!(file instanceof File)) {
-		return errorResponse('invalid_request', '`file` form field missing', 400);
+	const payload = await request.json().catch(() => null);
+	if (!payload?.name) {
+		return errorResponse('invalid_request', '`name` is required in JSON body', 400);
 	}
-	if (file.size > MAX_DIRECT_UPLOAD_BYTES) {
-		return errorResponse('payload_too_large', `file exceeds ${MAX_DIRECT_UPLOAD_BYTES} bytes, use /api/uploads`, 413);
-	}
-	const metadata = {};
-	const desiredName = file.name || `upload-${Date.now()}`;
+	const desiredName = payload.name || `upload-${Date.now()}`;
 	const idx = await getNextAnonymousUploadIndex(env);
-	metadata.name = settings?.anonymousFilenamePrefixEnabled ? `${idx}_${desiredName}` : desiredName;
+	const finalName = settings?.anonymousFilenamePrefixEnabled ? `${idx}_${desiredName}` : desiredName;
+	const sessionPayload = {
+		name: finalName,
+		mimeType: payload.mimeType || 'application/octet-stream',
+		size: payload.size,
+	};
 	if (settings?.anonymousUploadFolderId) {
-		metadata.parents = [settings.anonymousUploadFolderId];
+		sessionPayload.parents = [settings.anonymousUploadFolderId];
 	}
-	const uploaded = await drive.uploadMultipart({ file, metadata });
-	if (settings?.publicFileEnabled) {
-		await drive.setFilePublic(uploaded.id, true).catch(() => null);
-	}
-	return successResponse({ ...uploaded, anonymous: true, rawUrl: buildFilesUrl(uploaded.id, config, origin) }, 201);
+	const session = await drive.createResumableSession(sessionPayload);
+	return successResponse({
+		uploadUrl: session.uploadUrl,
+		fileId: session.fileId,
+		name: finalName,
+		anonymous: true,
+		rawUrl: session.fileId ? buildFilesUrl(session.fileId, config, origin) : null,
+	}, 201);
 }
+
+async function handleAnonymousUploadComplete(request, drive, config, origin) {
+	const payload = await request.json().catch(() => null);
+	if (!payload?.fileId) {
+		return errorResponse('invalid_request', '`fileId` is required', 400);
+	}
+	try {
+		const meta = await drive.getMetadata(payload.fileId);
+		return successResponse({
+			...meta,
+			anonymous: true,
+			rawUrl: buildFilesUrl(payload.fileId, config, origin),
+		});
+	} catch (err) {
+		return errorResponse('not_found', 'File not found or upload not completed', 404);
+	}
+}
+
 
 async function handleResumableInit(request, drive) {
 	const payload = await request.json();
@@ -1075,7 +1215,7 @@ function generateSwaggerHTML(config) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>API Documentation - Google Drive CDN</title>
+  <title>API Documentation - Luce Drive CDN</title>
   <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5.17.14/swagger-ui.css" />
   <style>
     html { box-sizing: border-box; overflow: -moz-scrollbars-vertical; overflow-y: scroll; }
@@ -1109,4 +1249,75 @@ function generateSwaggerHTML(config) {
   </script>
 </body>
 </html>`;
+}
+
+async function handleDriveRedirect(id, drive, origin) {
+	try {
+		const meta = await drive.getMetadata(id, 'mimeType');
+		if (meta.mimeType === 'application/vnd.google-apps.folder') {
+			return Response.redirect(`${origin}/folder/${id}`, 302);
+		}
+		return Response.redirect(`${origin}/files/${id}`, 302);
+	} catch {
+		return errorResponse('not_found', 'File or folder not found', 404);
+	}
+}
+
+async function handleFilePage(id, drive, config, origin) {
+	try {
+		const meta = await drive.getMetadata(id);
+		const html = asText(fileHtml)
+			.replace(/__FILE_NAME__/g, meta.name || 'Unknown File')
+			.replace(/__FILE_SIZE__/g, formatBytes(meta.size))
+			.replace(/__FILE_MIME__/g, meta.mimeType || 'unknown')
+			.replace(/__FILE_ICON__/g, getIconForMime(meta.mimeType))
+			.replace(/__FILE_DATE__/g, formatDate(meta.modifiedTime))
+			.replace(/__FILE_DOWNLOAD__/g, `/download/${id}`);
+		return new Response(html, {
+			headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders },
+		});
+	} catch (e) {
+		return errorResponse('not_found', 'File not found', 404);
+	}
+}
+
+async function handleFolderPage(id, drive, config, origin) {
+	try {
+		const meta = await drive.getMetadata(id, 'name');
+		const filesResponse = await drive.listFiles({ parentId: id, pageSize: 100 });
+		const itemsHtml = (filesResponse.files || []).map(f => {
+			const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
+			const link = isFolder ? `/folder/${f.id}` : `/files/${f.id}`;
+			const icon = isFolder ? 'ri-folder-fill' : getIconForMime(f.mimeType);
+			const size = isFolder ? '' : formatBytes(f.size);
+			return `
+            <a href="${link}" class="item ${isFolder ? 'item-folder' : ''}">
+                <i class="${icon} item-icon"></i>
+                <div class="item-details">
+                    <div class="item-name">${f.name}</div>
+                    <div class="item-meta">${formatDate(f.modifiedTime)} ${size ? '• ' + size : ''}</div>
+                </div>
+            </a>
+            `;
+		}).join('');
+
+		const html = asText(folderHtml)
+			.replace(/__FOLDER_NAME__/g, meta.name || 'Folder')
+			.replace(/__FOLDER_ITEMS__/g, itemsHtml);
+
+		return new Response(html, {
+			headers: { 'Content-Type': 'text/html; charset=utf-8', ...corsHeaders },
+		});
+	} catch (e) {
+		return errorResponse('not_found', 'Folder not found', 404);
+	}
+}
+
+function getIconForMime(mimeType = '') {
+	if (mimeType === 'application/vnd.google-apps.folder') return 'ri-folder-fill';
+	if (mimeType.startsWith('image/')) return 'ri-image-line';
+	if (mimeType.startsWith('video/')) return 'ri-movie-line';
+	if (mimeType.startsWith('audio/')) return 'ri-music-line';
+	if (mimeType === 'application/pdf') return 'ri-file-pdf-line';
+	return 'ri-file-line';
 }
