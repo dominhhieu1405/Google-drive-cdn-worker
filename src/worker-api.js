@@ -9,11 +9,11 @@ const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : nul
 
 const corsHeaders = {
 	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Headers': 'authorization,content-type,x-api-key,content-range,x-upload-content-type,x-upload-content-length',
+	'Access-Control-Allow-Headers': 'authorization,content-type,x-api-key',
 	'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
 };
 
-const MAX_DIRECT_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB limit for direct multipart uploads
+const MAX_DIRECT_UPLOAD_BYTES = 80 * 1024 * 1024; // 10MB limit for direct multipart uploads
 const DASHBOARD_REPO_URL = 'https://luce.moe';
 const FILE_COUNT_CACHE_KEY = 'dashboard:file_counts';
 const FILE_COUNT_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -26,7 +26,7 @@ const DASHBOARD_ASSET_BASE = 'https://dominhhieu1405.github.io/Google-drive-cdn-
 // const DASHBOARD_ASSET_BASE = 'https://cdn.jsdelivr.net/gh/dominhhieu1405/Google-drive-cdn-worker@main/src/assets';
 const DEFAULT_ASSET_CONFIG = {
 	cssUrl: `${DASHBOARD_ASSET_BASE}/main.css`,
-	jsUrl: `${DASHBOARD_ASSET_BASE}/main.js`,
+	jsUrl: `${DASHBOARD_ASSET_BASE}/main.js?v=3`,
 };
 
 // Local development config (fallback when running locally)
@@ -70,8 +70,7 @@ export default {
 		);
 
 		const isAdminLoginRequest = segments[0] === 'api' && segments[1] === 'admin' && segments[2] === 'login' && request.method === 'POST';
-		const isAnonymousUploadCompleteRequest = segments[0] === 'api' && segments[1] === 'anonymous' && segments[2] === 'upload' && segments[3] === 'complete' && request.method === 'POST';
-		const isAnonymousUploadRequest = segments[0] === 'api' && segments[1] === 'anonymous' && segments[2] === 'upload' && !segments[3] && request.method === 'POST';
+		const isAnonymousUploadRequest = segments[0] === 'api' && segments[1] === 'anonymous' && segments[2] === 'upload' && request.method === 'POST';
 		let configPromise;
 		const getConfig = () => {
 			if (!configPromise) {
@@ -120,7 +119,7 @@ export default {
 
 		// File delivery is public, API requests require auth
 		const isPublicRequest = isDownloadRequest || isFilePageRequest || isFolderPageRequest || isDriveRedirect;
-		const requiresApiTokenAuth = !isPublicRequest && !isAdminLoginRequest && !isAnonymousUploadRequest && !isAnonymousUploadCompleteRequest && !(segments[0] === 'api' && segments[1] === 'admin');
+		const requiresApiTokenAuth = !isPublicRequest && !isAdminLoginRequest && !isAnonymousUploadRequest && !(segments[0] === 'api' && segments[1] === 'admin');
 		if (requiresApiTokenAuth && !isAuthorized(request, config.API_TOKENS)) {
 			return errorResponse('unauthorized', 'API key required. Use Authorization: Bearer <token> or x-api-key header.', 401);
 		}
@@ -167,19 +166,12 @@ export default {
 				}
 			}
 
-			if (isAnonymousUploadCompleteRequest) {
-				if (!settings.anonymousUploadEnabled) {
-					return errorResponse('forbidden', 'Anonymous uploads are disabled by admin.', 403);
-				}
-				return handleAnonymousUploadComplete(request, drive, config, url.origin);
-			}
-
 			if (isAnonymousUploadRequest) {
 				if (!settings.anonymousUploadEnabled) {
 					return errorResponse('forbidden', 'Anonymous uploads are disabled by admin.', 403);
 				}
 				const result = await handleAnonymousUpload(request, drive, config, env, url.origin, settings);
-				ctx.waitUntil(trackUpload(env, 'anonymous_resumable'));
+				ctx.waitUntil(trackUpload(env, 'anonymous_multipart'));
 				return result;
 			}
 
@@ -809,46 +801,26 @@ async function handleMultipartUpload(request, drive, config, env, origin, settin
 }
 
 async function handleAnonymousUpload(request, drive, config, env, origin, settings) {
-	const payload = await request.json().catch(() => null);
-	if (!payload?.name) {
-		return errorResponse('invalid_request', '`name` is required in JSON body', 400);
+	const formData = await request.formData();
+	const file = formData.get('file');
+	if (!(file instanceof File)) {
+		return errorResponse('invalid_request', '`file` form field missing', 400);
 	}
-	const desiredName = payload.name || `upload-${Date.now()}`;
+	if (file.size > MAX_DIRECT_UPLOAD_BYTES) {
+		return errorResponse('payload_too_large', `file exceeds ${MAX_DIRECT_UPLOAD_BYTES} bytes, use /api/uploads`, 413);
+	}
+	const metadata = {};
+	const desiredName = file.name || `upload-${Date.now()}`;
 	const idx = await getNextAnonymousUploadIndex(env);
-	const finalName = settings?.anonymousFilenamePrefixEnabled ? `${idx}_${desiredName}` : desiredName;
-	const sessionPayload = {
-		name: finalName,
-		mimeType: payload.mimeType || 'application/octet-stream',
-		size: payload.size,
-	};
+	metadata.name = settings?.anonymousFilenamePrefixEnabled ? `${idx}_${desiredName}` : desiredName;
 	if (settings?.anonymousUploadFolderId) {
-		sessionPayload.parents = [settings.anonymousUploadFolderId];
+		metadata.parents = [settings.anonymousUploadFolderId];
 	}
-	const session = await drive.createResumableSession(sessionPayload);
-	return successResponse({
-		uploadUrl: session.uploadUrl,
-		fileId: session.fileId,
-		name: finalName,
-		anonymous: true,
-		rawUrl: session.fileId ? buildFilesUrl(session.fileId, config, origin) : null,
-	}, 201);
-}
-
-async function handleAnonymousUploadComplete(request, drive, config, origin) {
-	const payload = await request.json().catch(() => null);
-	if (!payload?.fileId) {
-		return errorResponse('invalid_request', '`fileId` is required', 400);
-	}
-	try {
-		const meta = await drive.getMetadata(payload.fileId);
-		return successResponse({
-			...meta,
-			anonymous: true,
-			rawUrl: buildFilesUrl(payload.fileId, config, origin),
-		});
-	} catch (err) {
-		return errorResponse('not_found', 'File not found or upload not completed', 404);
-	}
+	const uploaded = await drive.uploadMultipart({ file, metadata });
+	// if (settings?.publicFileEnabled) {
+	// 	await drive.setFilePublic(uploaded.id, true).catch(() => null);
+	// }
+	return successResponse({ ...uploaded, anonymous: true, rawUrl: buildFilesUrl(uploaded.id, config, origin) }, 201);
 }
 
 
