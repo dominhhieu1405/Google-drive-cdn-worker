@@ -79,88 +79,88 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initializeApp() {
-	isLoadingFiles = true;
-	renderFiles();
-	setupEventListeners();
-	setupThemeToggle();
-	setupHeaderScroll();
-	loadTheme();
-	hydrateFooterMeta();
-	if (loadMoreBtn) {
-		loadMoreBtn.style.display = 'none';
-	}
-	fetchSummary();
-	// fetchFiles({reset: true, force: true});
-	initializeAppNew();
+    isLoadingFiles = true;
+    renderFiles();
+    setupEventListeners();
+    setupThemeToggle();
+    setupHeaderScroll();
+    loadTheme();
+    hydrateFooterMeta();
+    if (loadMoreBtn) {
+        loadMoreBtn.style.display = 'none';
+    }
+    fetchSummary();
+    // fetchFiles({reset: true, force: true});
+    initializeAppNew();
 }
 
 // Khởi tạo trang chủ
 async function initializeAppNew() {
-	const response = await fetch('/api/admin/settings'); // Lấy settings công khai
-	const settings = (await response.json()).data;
+    const response = await fetch('/api/admin/settings'); // Lấy settings công khai
+    const settings = (await response.json()).data;
 
-	// 1. Điều khiển hiển thị phần Assets
-	const assetsSection = document.getElementById('hostedAssetsSection');
-	if (settings.publicFileEnabled) {
-		assetsSection.hidden = false;
-		fetchFiles({ reset: true });
-	}
+    // 1. Điều khiển hiển thị phần Assets
+    const assetsSection = document.getElementById('hostedAssetsSection');
+    if (settings.publicFileEnabled) {
+        assetsSection.hidden = false;
+        fetchFiles({ reset: true });
+    }
 
-	// 2. Điều khiển hiển thị Upload ẩn danh
-	const anonContainer = document.getElementById('anonUploadContainer');
-	if (settings.anonymousUploadEnabled) {
-		anonContainer.hidden = false;
-		initDropZone();
-	}
+    // 2. Điều khiển hiển thị Upload ẩn danh
+    const anonContainer = document.getElementById('anonUploadContainer');
+    if (settings.anonymousUploadEnabled) {
+        anonContainer.hidden = false;
+        initDropZone();
+    }
 }
 // Logic Dropzone
 function initDropZone() {
-	console.log('Initializing drop zone for anonymous uploads');
-	const dz = document.getElementById('dropZone');
-	const input = document.getElementById('anonFileInput');
+    console.log('Initializing drop zone for anonymous uploads');
+    const dz = document.getElementById('dropZone');
+    const input = document.getElementById('anonFileInput');
 
-	dz.onclick = () => input.click();
+    dz.onclick = () => input.click();
 
-	dz.ondragover = (e) => { e.preventDefault(); dz.classList.add('dragging'); };
-	dz.ondragleave = () => dz.classList.remove('dragging');
+    dz.ondragover = (e) => { e.preventDefault(); dz.classList.add('dragging'); };
+    dz.ondragleave = () => dz.classList.remove('dragging');
 
-	dz.ondrop = async (e) => {
-		e.preventDefault();
-		dz.classList.remove('dragging');
-		const file = e.dataTransfer.files[0];
-		if (file) handleUpload(file);
-	};
+    dz.ondrop = async (e) => {
+        e.preventDefault();
+        dz.classList.remove('dragging');
+        const file = e.dataTransfer.files[0];
+        if (file) handleUpload(file);
+    };
 
-	input.onchange = (e) => {
-		const file = e.target.files[0];
-		if (file) handleUpload(file);
-	};
+    input.onchange = (e) => {
+        const file = e.target.files[0];
+        if (file) handleUpload(file);
+    };
 }
 
 async function handleUpload(file) {
-	const status = document.getElementById('uploadStatus');
-	status.innerHTML = `<div class="loading">Đang tải lên: ${file.name}...</div>`;
+    const status = document.getElementById('uploadStatus');
+    status.innerHTML = `<div class="loading">Đang tải lên: ${file.name}...</div>`;
 
-	const formData = new FormData();
-	formData.append('file', file);
+    const formData = new FormData();
+    formData.append('file', file);
 
-	try {
-		const res = await fetch('/api/anonymous/upload', { method: 'POST', body: formData });
-		const result = await res.json();
-		if (result.status === 'success') {
-			showNotification('Tải lên thành công!', 'success');
-			status.innerHTML = `<div class="url-copy">
+    try {
+        const res = await fetch('/api/anonymous/upload', { method: 'POST', body: formData });
+        const result = await res.json();
+        if (result.status === 'success') {
+            showNotification('Tải lên thành công!', 'success');
+            status.innerHTML = `
 										<div class="search-box">
                         <i class="ri-check-line search-icon"></i>
                         <input value="${result.data.rawUrl}" type="text" readonly class="search-input">
                         <button class="filter-btn" onclick="copyToClipboard('${result.data.rawUrl}')">
                             <i class="ri-clipboard-line"></i>
                         </button>
-                    </div></div>`;
-		}
-	} catch (err) {
-		showNotification('Lỗi khi tải lên', 'error');
-	}
+                    </div>`;
+        }
+    } catch (err) {
+        showNotification('Lỗi khi tải lên', 'error');
+    }
 }
 function setupEventListeners() {
     if (assetSearchInput) {
@@ -864,186 +864,186 @@ if ('serviceWorker' in navigator) {
 
 // Admin panel logic
 const adminState = {
-	token: localStorage.getItem('admin_token') || '',
-	folders: [],
-	settings: null
+    token: localStorage.getItem('admin_token') || '',
+    folders: [],
+    settings: null
 };
 
 document.addEventListener('DOMContentLoaded', () => {
-	setupAdminPanel();
+    setupAdminPanel();
 });
 
 function setupAdminPanel() {
-	const loginBtn = document.getElementById('adminLoginBtn');
-	const saveSettingsBtn = document.getElementById('saveSettingsBtn');
-	const createFolderBtn = document.getElementById('createFolderBtn');
-	const adminUploadBtn = document.getElementById('adminUploadBtn');
-	const logoutBtn = document.getElementById('adminLogoutBtn');
+    const loginBtn = document.getElementById('adminLoginBtn');
+    const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    const createFolderBtn = document.getElementById('createFolderBtn');
+    const adminUploadBtn = document.getElementById('adminUploadBtn');
+    const logoutBtn = document.getElementById('adminLogoutBtn');
 
-	if (loginBtn) loginBtn.addEventListener('click', adminLogin);
-	if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveAdminSettings);
-	if (createFolderBtn) createFolderBtn.addEventListener('click', createAdminFolder);
-	if (adminUploadBtn) adminUploadBtn.addEventListener('click', adminUploadFile);
-	if (logoutBtn) logoutBtn.addEventListener('click', adminLogout);
+    if (loginBtn) loginBtn.addEventListener('click', adminLogin);
+    if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveAdminSettings);
+    if (createFolderBtn) createFolderBtn.addEventListener('click', createAdminFolder);
+    if (adminUploadBtn) adminUploadBtn.addEventListener('click', adminUploadFile);
+    if (logoutBtn) logoutBtn.addEventListener('click', adminLogout);
 
-	updateAdminAuthUI(!!adminState.token);
+    updateAdminAuthUI(!!adminState.token);
 
-	if (adminState.token) {
-		hydrateAdminPanel().catch((error) => {
-			console.error(error);
-			adminLogout(false);
-			showNotification('Phiên đăng nhập admin không còn hợp lệ', 'warning');
-		});
-	}
+    if (adminState.token) {
+        hydrateAdminPanel().catch((error) => {
+            console.error(error);
+            adminLogout(false);
+            showNotification('Phiên đăng nhập admin không còn hợp lệ', 'warning');
+        });
+    }
 }
 
 async function adminLogin() {
-	const username = document.getElementById('adminUsername')?.value?.trim();
-	const password = document.getElementById('adminPassword')?.value || '';
+    const username = document.getElementById('adminUsername')?.value?.trim();
+    const password = document.getElementById('adminPassword')?.value || '';
 
-	if (!username || !password) {
-		showNotification('Nhập username/password admin', 'warning');
-		return;
-	}
+    if (!username || !password) {
+        showNotification('Nhập username/password admin', 'warning');
+        return;
+    }
 
-	const response = await fetch('/api/admin/login', {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ username, password })
-	});
+    const response = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+    });
 
-	const payload = await response.json();
+    const payload = await response.json();
 
-	if (!response.ok || payload.status !== 'success') {
-		showNotification(payload?.error?.message || 'Đăng nhập admin thất bại', 'error');
-		return;
-	}
+    if (!response.ok || payload.status !== 'success') {
+        showNotification(payload?.error?.message || 'Đăng nhập admin thất bại', 'error');
+        return;
+    }
 
-	adminState.token = payload.data.token;
-	localStorage.setItem('admin_token', adminState.token);
+    adminState.token = payload.data.token;
+    localStorage.setItem('admin_token', adminState.token);
 
-	showNotification('Admin đăng nhập thành công', 'success');
-	updateAdminAuthUI(true);
-	hydrateAdminPanel();
+    showNotification('Admin đăng nhập thành công', 'success');
+    updateAdminAuthUI(true);
+    hydrateAdminPanel();
 }
 
 async function hydrateAdminPanel() {
-	updateAdminAuthUI(true);
-	await Promise.all([loadAdminSettings(), loadAdminFolders()]);
+    updateAdminAuthUI(true);
+    await Promise.all([loadAdminSettings(), loadAdminFolders()]);
 }
 
 function updateAdminAuthUI(isLoggedIn) {
-	const loginView = document.getElementById('adminLoginView');
-	const dashboardView = document.getElementById('adminDashboardView');
-	const controls = document.getElementById('adminControls');
-	const statusLabel = document.getElementById('adminStatusLabel');
-	const panel = document.getElementById('adminPanel');
+    const loginView = document.getElementById('adminLoginView');
+    const dashboardView = document.getElementById('adminDashboardView');
+    const controls = document.getElementById('adminControls');
+    const statusLabel = document.getElementById('adminStatusLabel');
+    const panel = document.getElementById('adminPanel');
 
-	if (panel) {
-		panel.classList.toggle('admin-panel--logged-in', !!isLoggedIn);
-	}
+    if (panel) {
+        panel.classList.toggle('admin-panel--logged-in', !!isLoggedIn);
+    }
 
-	if (loginView) {
-		loginView.hidden = !!isLoggedIn;
-	}
+    if (loginView) {
+        loginView.hidden = !!isLoggedIn;
+    }
 
-	if (dashboardView) {
-		dashboardView.hidden = !isLoggedIn;
-	}
+    if (dashboardView) {
+        dashboardView.hidden = !isLoggedIn;
+    }
 
-	if (controls) {
-		controls.hidden = !isLoggedIn;
-	}
+    if (controls) {
+        controls.hidden = !isLoggedIn;
+    }
 
-	if (statusLabel) {
-		statusLabel.textContent = isLoggedIn ? 'Đã đăng nhập' : 'Chưa đăng nhập';
-	}
+    if (statusLabel) {
+        statusLabel.textContent = isLoggedIn ? 'Đã đăng nhập' : 'Chưa đăng nhập';
+    }
 }
 
 function adminLogout(showMessage = true) {
-	adminState.token = '';
-	adminState.folders = [];
-	adminState.settings = null;
-	localStorage.removeItem('admin_token');
+    adminState.token = '';
+    adminState.folders = [];
+    adminState.settings = null;
+    localStorage.removeItem('admin_token');
 
-	updateAdminAuthUI(false);
+    updateAdminAuthUI(false);
 
-	const folderList = document.getElementById('folderList');
-	if (folderList) folderList.innerHTML = '';
+    const folderList = document.getElementById('folderList');
+    if (folderList) folderList.innerHTML = '';
 
-	const folderSelect = document.getElementById('settingAnonFolder');
-	if (folderSelect) folderSelect.innerHTML = '';
+    const folderSelect = document.getElementById('settingAnonFolder');
+    if (folderSelect) folderSelect.innerHTML = '';
 
-	const passwordInput = document.getElementById('adminPassword');
-	if (passwordInput) passwordInput.value = '';
+    const passwordInput = document.getElementById('adminPassword');
+    if (passwordInput) passwordInput.value = '';
 
-	if (showMessage) {
-		showNotification('Đã đăng xuất admin', 'success');
-	}
+    if (showMessage) {
+        showNotification('Đã đăng xuất admin', 'success');
+    }
 }
 
 async function adminFetch(url, init = {}) {
-	const headers = new Headers(init.headers || {});
-	headers.set('Authorization', `Bearer ${adminState.token}`);
+    const headers = new Headers(init.headers || {});
+    headers.set('Authorization', `Bearer ${adminState.token}`);
 
-	const response = await fetch(url, { ...init, headers });
-	const payload = await response.json().catch(() => ({}));
+    const response = await fetch(url, { ...init, headers });
+    const payload = await response.json().catch(() => ({}));
 
-	if (!response.ok || payload.status !== 'success') {
-		throw new Error(payload?.error?.message || `Request failed (${response.status})`);
-	}
+    if (!response.ok || payload.status !== 'success') {
+        throw new Error(payload?.error?.message || `Request failed (${response.status})`);
+    }
 
-	return payload.data;
+    return payload.data;
 }
 
 async function loadAdminSettings() {
-	try {
-		const settings = await adminFetch('/api/admin/settings');
-		adminState.settings = settings;
+    try {
+        const settings = await adminFetch('/api/admin/settings');
+        adminState.settings = settings;
 
-		const anonEnabled = document.getElementById('settingAnonEnabled');
-		const publicEnabled = document.getElementById('settingPublicEnabled');
-		const prefixEnabled = document.getElementById('settingPrefixEnabled');
+        const anonEnabled = document.getElementById('settingAnonEnabled');
+        const publicEnabled = document.getElementById('settingPublicEnabled');
+        const prefixEnabled = document.getElementById('settingPrefixEnabled');
 
-		if (anonEnabled) anonEnabled.checked = !!settings.anonymousUploadEnabled;
-		if (publicEnabled) publicEnabled.checked = !!settings.publicFileEnabled;
-		if (prefixEnabled) prefixEnabled.checked = !!settings.anonymousFilenamePrefixEnabled;
-	} catch (error) {
-		showNotification(error.message, 'error');
-	}
+        if (anonEnabled) anonEnabled.checked = !!settings.anonymousUploadEnabled;
+        if (publicEnabled) publicEnabled.checked = !!settings.publicFileEnabled;
+        if (prefixEnabled) prefixEnabled.checked = !!settings.anonymousFilenamePrefixEnabled;
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
 }
 
 async function loadAdminFolders() {
-	try {
-		const result = await adminFetch('/api/admin/folders');
-		adminState.folders = result.files || [];
-		renderFolderOptions();
-		renderFolderList();
-	} catch (error) {
-		showNotification(error.message, 'error');
-	}
+    try {
+        const result = await adminFetch('/api/admin/folders');
+        adminState.folders = result.files || [];
+        renderFolderOptions();
+        renderFolderList();
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
 }
 
 function renderFolderOptions() {
-	const select = document.getElementById('settingAnonFolder');
-	if (!select) return;
+    const select = document.getElementById('settingAnonFolder');
+    if (!select) return;
 
-	const opts = adminState.folders
-		.map((folder) => `<option value="${folder.id}">${escapeHtml(folder.name || folder.id)}</option>`)
-		.join('');
+    const opts = adminState.folders
+        .map((folder) => `<option value="${folder.id}">${escapeHtml(folder.name || folder.id)}</option>`)
+        .join('');
 
-	select.innerHTML = opts;
+    select.innerHTML = opts;
 
-	if (adminState.settings?.anonymousUploadFolderId) {
-		select.value = adminState.settings.anonymousUploadFolderId;
-	}
+    if (adminState.settings?.anonymousUploadFolderId) {
+        select.value = adminState.settings.anonymousUploadFolderId;
+    }
 }
 
 function renderFolderList() {
-	const container = document.getElementById('folderList');
-	if (!container) return;
+    const container = document.getElementById('folderList');
+    if (!container) return;
 
-	container.innerHTML = adminState.folders.map((folder) => `
+    container.innerHTML = adminState.folders.map((folder) => `
 		<div style="display:flex; align-items:center; gap:8px;">
 			<input data-folder-id="${folder.id}" value="${escapeHtml(folder.name || '')}" class="search-input" style="max-width:280px;" />
 			<button class="md-button md-button--tonal" type="button" onclick="renameAdminFolder('${folder.id}')">Đổi tên</button>
@@ -1053,103 +1053,103 @@ function renderFolderList() {
 }
 
 async function saveAdminSettings() {
-	const payload = {
-		anonymousUploadEnabled: !!document.getElementById('settingAnonEnabled')?.checked,
-		publicFileEnabled: !!document.getElementById('settingPublicEnabled')?.checked,
-		anonymousFilenamePrefixEnabled: !!document.getElementById('settingPrefixEnabled')?.checked,
-		anonymousUploadFolderId: document.getElementById('settingAnonFolder')?.value || ''
-	};
+    const payload = {
+        anonymousUploadEnabled: !!document.getElementById('settingAnonEnabled')?.checked,
+        publicFileEnabled: !!document.getElementById('settingPublicEnabled')?.checked,
+        anonymousFilenamePrefixEnabled: !!document.getElementById('settingPrefixEnabled')?.checked,
+        anonymousUploadFolderId: document.getElementById('settingAnonFolder')?.value || ''
+    };
 
-	try {
-		adminState.settings = await adminFetch('/api/admin/settings', {
-			method: 'PUT',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(payload)
-		});
+    try {
+        adminState.settings = await adminFetch('/api/admin/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
 
-		showNotification('Lưu cài đặt admin thành công', 'success');
-	} catch (error) {
-		showNotification(error.message, 'error');
-	}
+        showNotification('Lưu cài đặt admin thành công', 'success');
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
 }
 
 async function createAdminFolder() {
-	const name = document.getElementById('newFolderName')?.value?.trim();
+    const name = document.getElementById('newFolderName')?.value?.trim();
 
-	if (!name) {
-		showNotification('Nhập tên thư mục', 'warning');
-		return;
-	}
+    if (!name) {
+        showNotification('Nhập tên thư mục', 'warning');
+        return;
+    }
 
-	try {
-		await adminFetch('/api/admin/folders', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name })
-		});
+    try {
+        await adminFetch('/api/admin/folders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
 
-		document.getElementById('newFolderName').value = '';
-		await loadAdminFolders();
-		showNotification('Tạo thư mục thành công', 'success');
-	} catch (error) {
-		showNotification(error.message, 'error');
-	}
+        document.getElementById('newFolderName').value = '';
+        await loadAdminFolders();
+        showNotification('Tạo thư mục thành công', 'success');
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
 }
 
 async function adminUploadFile() {
-	const input = document.getElementById('adminUploadFile');
-	const file = input?.files?.[0];
+    const input = document.getElementById('adminUploadFile');
+    const file = input?.files?.[0];
 
-	if (!file) {
-		showNotification('Chọn file để upload', 'warning');
-		return;
-	}
+    if (!file) {
+        showNotification('Chọn file để upload', 'warning');
+        return;
+    }
 
-	const formData = new FormData();
-	formData.append('file', file);
+    const formData = new FormData();
+    formData.append('file', file);
 
-	try {
-		await adminFetch('/api/admin/upload', {
-			method: 'POST',
-			body: formData
-		});
+    try {
+        await adminFetch('/api/admin/upload', {
+            method: 'POST',
+            body: formData
+        });
 
-		input.value = '';
-		showNotification('Admin upload thành công', 'success');
-		fetchFiles({ reset: true, force: true });
-	} catch (error) {
-		showNotification(error.message, 'error');
-	}
+        input.value = '';
+        showNotification('Admin upload thành công', 'success');
+        fetchFiles({ reset: true, force: true });
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
 }
 
 window.renameAdminFolder = async function renameAdminFolder(folderId) {
-	const input = document.querySelector(`input[data-folder-id="${folderId}"]`);
-	const name = input?.value?.trim();
-	if (!name) return;
+    const input = document.querySelector(`input[data-folder-id="${folderId}"]`);
+    const name = input?.value?.trim();
+    if (!name) return;
 
-	try {
-		await adminFetch(`/api/admin/folders/${folderId}`, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ name })
-		});
+    try {
+        await adminFetch(`/api/admin/folders/${folderId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
 
-		showNotification('Đổi tên thư mục thành công', 'success');
-		loadAdminFolders();
-	} catch (error) {
-		showNotification(error.message, 'error');
-	}
+        showNotification('Đổi tên thư mục thành công', 'success');
+        loadAdminFolders();
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
 };
 
 window.deleteAdminFolder = async function deleteAdminFolder(folderId) {
-	try {
-		await adminFetch(`/api/admin/folders/${folderId}`, {
-			method: 'DELETE'
-		});
+    try {
+        await adminFetch(`/api/admin/folders/${folderId}`, {
+            method: 'DELETE'
+        });
 
-		showNotification('Đã xóa thư mục', 'success');
-		loadAdminFolders();
-	} catch (error) {
-		showNotification(error.message, 'error');
-	}
+        showNotification('Đã xóa thư mục', 'success');
+        loadAdminFolders();
+    } catch (error) {
+        showNotification(error.message, 'error');
+    }
 };
