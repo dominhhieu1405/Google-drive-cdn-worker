@@ -139,79 +139,27 @@ function initDropZone() {
 
 async function handleUpload(file) {
 	const status = document.getElementById('uploadStatus');
-	status.innerHTML = `<div class="loading">Đang khởi tạo upload: ${file.name}...</div>`;
+	status.innerHTML = `<div class="loading">Đang tải lên: ${file.name}...</div>`;
+
+	const formData = new FormData();
+	formData.append('file', file);
 
 	try {
-		// Step 1: Get resumable upload URL from worker
-		const initRes = await fetch('/api/anonymous/upload', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				name: file.name,
-				mimeType: file.type || 'application/octet-stream',
-				size: file.size,
-			}),
-		});
-		const initResult = await initRes.json();
-		if (initResult.status !== 'success' || !initResult.data?.uploadUrl) {
-			throw new Error(initResult.error?.message || 'Không thể khởi tạo upload');
-		}
-
-		const { uploadUrl, fileId } = initResult.data;
-
-		// Step 2: Upload file directly to Google Drive via resumable URL
-		status.innerHTML = `<div class="loading">Đang tải lên: ${file.name} (0%)</div>`;
-
-		await new Promise((resolve, reject) => {
-			const xhr = new XMLHttpRequest();
-			xhr.open('PUT', uploadUrl, true);
-			xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-
-			xhr.upload.onprogress = (e) => {
-				if (e.lengthComputable) {
-					const pct = Math.round((e.loaded / e.total) * 100);
-					status.innerHTML = `<div class="loading">Đang tải lên: ${file.name} (${pct}%)</div>`;
-				}
-			};
-
-			xhr.onload = () => {
-				if (xhr.status >= 200 && xhr.status < 400) {
-					resolve();
-				} else {
-					reject(new Error(`Upload failed: ${xhr.status}`));
-				}
-			};
-			xhr.onerror = () => reject(new Error('Network error during upload'));
-			xhr.send(file);
-		});
-
-		// Step 3: Get CDN URL from complete endpoint
-		status.innerHTML = `<div class="loading">Đang hoàn tất...</div>`;
-		const completeRes = await fetch('/api/anonymous/upload/complete', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ fileId }),
-		});
-		const completeResult = await completeRes.json();
-
-		if (completeResult.status === 'success') {
-			const rawUrl = completeResult.data.rawUrl;
+		const res = await fetch('/api/anonymous/upload', { method: 'POST', body: formData });
+		const result = await res.json();
+		if (result.status === 'success') {
 			showNotification('Tải lên thành công!', 'success');
 			status.innerHTML = `<div class="url-copy">
-									<div class="search-box">
+										<div class="search-box">
                         <i class="ri-check-line search-icon"></i>
-                        <input value="${rawUrl}" type="text" readonly class="search-input">
-                        <button class="filter-btn" onclick="copyToClipboard('${rawUrl}')">
+                        <input value="${result.data.rawUrl}" type="text" readonly class="search-input">
+                        <button class="filter-btn" onclick="copyToClipboard('${result.data.rawUrl}')">
                             <i class="ri-clipboard-line"></i>
                         </button>
                     </div></div>`;
-		} else {
-			throw new Error(completeResult.error?.message || 'Upload completed but failed to get URL');
 		}
 	} catch (err) {
-		console.error('Upload error:', err);
-		showNotification(err.message || 'Lỗi khi tải lên', 'error');
-		status.innerHTML = `<div class="loading" style="color: var(--color-error, #ef4444);">Lỗi: ${err.message || 'Không thể tải lên'}</div>`;
+		showNotification('Lỗi khi tải lên', 'error');
 	}
 }
 function setupEventListeners() {
